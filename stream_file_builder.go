@@ -44,6 +44,7 @@ type StreamFileBuilder struct {
 const (
 	sheetFilePathPrefix = "xl/worksheets/sheet"
 	sheetFilePathSuffix = ".xml"
+	stylesFilePath      = "xl/styles.xml"
 	endSheetDataTag     = "</sheetData>"
 	dimensionTag        = `<dimension ref="%s"></dimension>`
 	// This is the index of the max style that this library will insert into XLSX sheets by default.
@@ -138,6 +139,12 @@ func (sb *StreamFileBuilder) Build() (*StreamFile, error) {
 		styleIds:       sb.styleIds,
 	}
 	for path, data := range parts {
+		// If the part is styles file, don't write it yet. It's possible cell will add new styles.
+		// write styles in the end when all sheets are written
+		if path == stylesFilePath {
+			continue
+		}
+
 		// If the part is a sheet, don't write it yet. We only want to write the XLSX metadata files, since at this
 		// point the sheets are still empty. The sheet files will be written later as their rows come in.
 		if strings.HasPrefix(path, sheetFilePathPrefix) {

@@ -34,6 +34,7 @@ var (
 	NoCurrentSheetError     = errors.New("no Current Sheet")
 	WrongNumberOfRowsError  = errors.New("invalid number of cells passed to Write. All calls to Write on the same sheet must have the same number of cells")
 	AlreadyOnLastSheetError = errors.New("NextSheet() called, but already on last sheet")
+	UnknownCellTypeError    = errors.New("unknown cell type")
 )
 
 // Write will write a row of cells to the current sheet. Every call to Write on the same sheet must contain the
@@ -44,6 +45,18 @@ func (sf *StreamFile) Write(cells []string) error {
 		return sf.err
 	}
 	err := sf.write(cells)
+	if err != nil {
+		sf.err = err
+		return err
+	}
+	return sf.zipWriter.Flush()
+}
+
+func (sf *StreamFile) WriteRow(cells []*Cell) error {
+	if sf.err != nil {
+		return sf.err
+	}
+	err := sf.writeRow(cells)
 	if err != nil {
 		sf.err = err
 		return err
@@ -62,6 +75,80 @@ func (sf *StreamFile) WriteAll(records [][]string) error {
 			return err
 		}
 	}
+	return sf.zipWriter.Flush()
+}
+
+func (sf *StreamFile) writeRow(cells []*Cell) error {
+	if sf.currentSheet == nil {
+		return NoCurrentSheetError
+	}
+
+	if len(cells) != sf.currentSheet.columnCount {
+		return WrongNumberOfRowsError
+	}
+
+	sheet := sf.xlsxFile.Sheets[sf.currentSheet.index-1]
+	styles := sf.xlsxFile.styles
+
+	sf.currentSheet.rowCount++
+
+	xRow := xlsxRow{
+		R: sf.currentSheet.rowCount,
+	}
+
+	for colIndex, cell := range cells {
+		XfID := sf.currentSheet.styleIds[colIndex]
+		xNumFmt := styles.newNumFmt(cell.NumFmt)
+		style := cell.style
+
+		if style != nil {
+			XfID = handleStyleForXLSX(style, xNumFmt.NumFmtId, styles)
+		} else if len(cell.NumFmt) > 0 && !compareFormatString(sheet.Cols[colIndex].numFmt, cell.NumFmt) {
+			XfID = handleNumFmtIdForXLSX(xNumFmt.NumFmtId, styles)
+		}
+
+		xC := xlsxC{
+			S: XfID,
+			R: GetCellIDStringFromCoords(colIndex, sf.currentSheet.rowCount-1),
+		}
+		if cell.formula != "" {
+			xC.F = &xlsxF{Content: cell.formula}
+		}
+		switch cell.cellType {
+		case CellTypeInline, CellTypeString:
+			xC.Is = &xlsxSI{T: cell.Value}
+			xC.T = "inlineStr"
+		case CellTypeNumeric:
+			// Numeric is the default, so the type can be left blank
+			xC.V = cell.Value
+		case CellTypeBool:
+			xC.V = cell.Value
+			xC.T = "b"
+		case CellTypeError:
+			xC.V = cell.Value
+			xC.T = "e"
+		case CellTypeDate:
+			xC.V = cell.Value
+			xC.T = "d"
+		case CellTypeStringFormula:
+			xC.V = cell.Value
+			xC.T = "str"
+		default:
+			return UnknownCellTypeError
+		}
+
+		xRow.C = append(xRow.C, xC)
+	}
+
+	rowStr, err := xml.Marshal(xRow)
+	if err != nil {
+		return err
+	}
+	// write row
+	if err := sf.currentSheet.write(string(rowStr)); err != nil {
+		return err
+	}
+
 	return sf.zipWriter.Flush()
 }
 
@@ -185,6 +272,13 @@ func (sf *StreamFile) Close() error {
 			return err
 		}
 	}
+
+	// Write the styles file
+	if err := sf.writeStyles(); err != nil {
+		sf.err = err
+		return err
+	}
+
 	err := sf.zipWriter.Close()
 	if err != nil {
 		sf.err = err
@@ -198,6 +292,19 @@ func (sf *StreamFile) writeSheetStart() error {
 		return NoCurrentSheetError
 	}
 	return sf.currentSheet.write(sf.sheetXmlPrefix[sf.currentSheet.index-1])
+}
+
+func (sf *StreamFile) writeStyles() error {
+	stylesFileWriter, err := sf.zipWriter.Create(stylesFilePath)
+	if err != nil {
+		return err
+	}
+	styles, err := sf.xlsxFile.styles.Marshal()
+	if err != nil {
+		return err
+	}
+	_, err = stylesFileWriter.Write([]byte(styles))
+	return err
 }
 
 // writeSheetEnd will write the end of the Sheet's XML
