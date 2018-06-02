@@ -87,7 +87,6 @@ func (sf *StreamFile) writeRow(cells []*Cell) error {
 		return WrongNumberOfRowsError
 	}
 
-	sheet := sf.xlsxFile.Sheets[sf.currentSheet.index-1]
 	styles := sf.xlsxFile.styles
 
 	sf.currentSheet.rowCount++
@@ -95,21 +94,16 @@ func (sf *StreamFile) writeRow(cells []*Cell) error {
 	xRow := xlsxRow{
 		R: sf.currentSheet.rowCount,
 	}
-
 	for colIndex, cell := range cells {
-		XfID := sf.currentSheet.styleIds[colIndex]
 		xNumFmt := styles.newNumFmt(cell.NumFmt)
 		style := cell.style
-
-		if style != nil {
-			XfID = handleStyleForXLSX(style, xNumFmt.NumFmtId, styles)
-		} else if len(cell.NumFmt) > 0 && !compareFormatString(sheet.Cols[colIndex].numFmt, cell.NumFmt) {
-			XfID = handleNumFmtIdForXLSX(xNumFmt.NumFmtId, styles)
-		}
-
 		xC := xlsxC{
-			S: XfID,
 			R: GetCellIDStringFromCoords(colIndex, sf.currentSheet.rowCount-1),
+		}
+		if style != nil {
+			xC.S = handleStyleForXLSX(style, xNumFmt.NumFmtId, styles)
+		} else {
+			xC.S = handleNumFmtIdForXLSX(xNumFmt.NumFmtId, styles)
 		}
 		if cell.formula != "" {
 			xC.F = &xlsxF{Content: cell.formula}
@@ -136,10 +130,8 @@ func (sf *StreamFile) writeRow(cells []*Cell) error {
 		default:
 			return UnknownCellTypeError
 		}
-
 		xRow.C = append(xRow.C, xC)
 	}
-
 	rowStr, err := xml.Marshal(xRow)
 	if err != nil {
 		return err
